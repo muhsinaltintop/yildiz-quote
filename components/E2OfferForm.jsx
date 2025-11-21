@@ -8,7 +8,7 @@ export default function E2OfferForm() {
   const [items, setItems] = useState([]);
   const [clientName, setClientName] = useState("");
   const [clientEmail, setClientEmail] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false); // hem ilk yükleme hem submit için
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [offerId, setOfferId] = useState(null);
   const [error, setError] = useState(null);
@@ -42,7 +42,7 @@ export default function E2OfferForm() {
           }))
         );
       } catch (err) {
-        console.error(err);
+        console.error("Şablon yükleme hatası:", err);
         setError(err.message || "Bir hata oluştu");
       } finally {
         setLoading(false);
@@ -100,13 +100,13 @@ export default function E2OfferForm() {
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        console.error(data);
+        console.error("Ücret tablosu kaydetme hatası:", data);
         alert(data.error || "Ücret tablosu kaydedilemedi");
       } else {
         alert("Ücret tablosu şablon olarak kaydedildi.");
       }
     } catch (err) {
-      console.error(err);
+      console.error("Ücret tablosu kaydetme hatası:", err);
       alert("Beklenmeyen bir hata oluştu.");
     } finally {
       setSavingTemplate(false);
@@ -117,6 +117,8 @@ export default function E2OfferForm() {
     if (!template) return;
 
     setLoading(true);
+    setError(null);
+
     try {
       const payload = {
         templateId: template.id,
@@ -143,18 +145,36 @@ export default function E2OfferForm() {
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        console.error(data);
-        alert(data.error || "Teklif oluşturulamadı");
+        console.error("Teklif oluşturma hatası:", {
+          status: res.status,
+          data,
+        });
+        const msg =
+          data.error ||
+          `Teklif oluşturulamadı (status: ${res.status || "bilinmiyor"})`;
+        setError(msg);
+        alert(msg);
         return;
       }
 
-      setOfferId(data.offerId);
+      // Backend'in ne döndürdüğüne göre iki ihtimali de destekle
+      const newOfferId = data.offerId ?? data.id;
 
-      if (data.offerId) {
-        window.open(`/api/offers/pdf?id=${data.offerId}`, "_blank");
+      if (!newOfferId) {
+        console.error("API response içinde offerId/id yok:", data);
+        alert(
+          "Teklif oluşturuldu ancak teklif ID alınamadı. Lütfen logları kontrol edin."
+        );
+        return;
       }
+
+      setOfferId(newOfferId);
+
+      // PDF endpoint'ini aç
+      window.open(`/api/offers/pdf?id=${newOfferId}`, "_blank");
     } catch (err) {
-      console.error(err);
+      console.error("Teklif oluşturma beklenmeyen hata:", err);
+      setError("Beklenmeyen bir hata oluştu.");
       alert("Beklenmeyen bir hata oluştu.");
     } finally {
       setLoading(false);

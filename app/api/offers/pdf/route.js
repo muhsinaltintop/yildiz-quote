@@ -1,26 +1,38 @@
 // app/api/offers/pdf/route.js
-import { NextResponse } from 'next/server';
-import { getDb } from '@/lib/db';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { NextResponse } from "next/server";
+import { getDb } from "@/lib/db";
+import { PDFDocument } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
+import fs from "fs/promises";
+import path from "path";
 
-// Türkçe karakterleri WinAnsi'ye uygun hale getir
-function sanitizeText(text = '') {
-  const map = {
-    'ı': 'i',
-    'İ': 'I',
-    'ş': 's',
-    'Ş': 'S',
-    'ğ': 'g',
-    'Ğ': 'G',
-    'ç': 'c',
-    'Ç': 'C',
-    'ö': 'o',
-    'Ö': 'O',
-    'ü': 'u',
-    'Ü': 'U',
-  };
+export const runtime = "nodejs";
 
-  return text.replace(/[ıİşŞğĞçÇöÖüÜ]/g, (ch) => map[ch] || ch);
+// Fontları cache'leyelim
+let regularFontBytesPromise = null;
+let boldFontBytesPromise = null;
+
+async function getFontBytes() {
+  if (!regularFontBytesPromise) {
+    regularFontBytesPromise = fs.readFile(
+      path.join(process.cwd(), "public", "fonts", "OpenSans-Regular.ttf")
+    );
+    boldFontBytesPromise = fs.readFile(
+      path.join(process.cwd(), "public", "fonts", "OpenSans-Bold.ttf")
+    );
+  }
+
+  const [regular, bold] = await Promise.all([
+    regularFontBytesPromise,
+    boldFontBytesPromise,
+  ]);
+
+  return { regular, bold };
+}
+
+// HTML -> düz metin
+function htmlToPlain(text = "") {
+  return text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export async function GET(req) {
@@ -28,16 +40,16 @@ export async function GET(req) {
 
   try {
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
+    const id = searchParams.get("id");
 
     if (!id) {
       return NextResponse.json(
-        { error: 'id parametresi gerekli' },
+        { error: "id parametresi gerekli" },
         { status: 400 }
       );
     }
 
-    console.log('PDF route offerId:', id);
+    console.log("PDF route offerId:", id);
 
     // 1) Offer
     const [[offer]] = await db.query(
@@ -57,9 +69,9 @@ export async function GET(req) {
     );
 
     if (!offer) {
-      console.error('Offer not found in DB for id:', id);
+      console.error("Offer not found in DB for id:", id);
       return NextResponse.json(
-        { error: 'Offer not found' },
+        { error: "Offer not found" },
         { status: 404 }
       );
     }
@@ -83,10 +95,10 @@ export async function GET(req) {
       [offer.language, offer.template_id]
     );
 
-    const coverTitle = tpl?.cover_title || 'Teklif';
-    const coverNote = tpl?.cover_note || '';
-    const notesHtml = tpl?.notes_html || '';
-    const paymentHtml = tpl?.payment_instructions_html || '';
+    const coverTitle = tpl?.cover_title || "Teklif";
+    const coverNote = tpl?.cover_note || "";
+    const notesHtml = tpl?.notes_html || "";
+    const paymentHtml = tpl?.payment_instructions_html || "";
 
     // 3) Ücret kalemleri
     const [items] = await db.query(
@@ -99,29 +111,34 @@ export async function GET(req) {
       [id]
     );
 
-    // 4) PDF
+    // 4) PDF + custom font
     const pdfDoc = await PDFDocument.create();
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-    const offerDate = new Date(offer.offer_date).toLocaleDateString('tr-TR');
+    // ÖNEMLİ: custom font için fontkit kaydet
+    pdfDoc.registerFontkit(fontkit);
+
+    const { regular, bold } = await getFontBytes();
+    const font = await pdfDoc.embedFont(regular, { subset: true });
+    const fontBold = await pdfDoc.embedFont(bold, { subset: true });
+
+    const offerDate = new Date(offer.offer_date).toLocaleDateString("tr-TR");
     const validUntil = offer.valid_until
-      ? new Date(offer.valid_until).toLocaleDateString('tr-TR')
-      : '';
+      ? new Date(offer.valid_until).toLocaleDateString("tr-TR")
+      : "";
 
     /* --- 1. Sayfa: Kapak --- */
     {
       const page = pdfDoc.addPage();
       const { width, height } = page.getSize();
 
-      page.drawText(sanitizeText(coverTitle), {
+      page.drawText(coverTitle || "Teklif", {
         x: 50,
         y: height - 100,
         size: 18,
         font: fontBold,
       });
 
-      page.drawText(sanitizeText(`Tarih: ${offerDate}`), {
+      page.drawText(`Tarih: ${offerDate}`, {
         x: 50,
         y: height - 130,
         size: 12,
@@ -129,7 +146,7 @@ export async function GET(req) {
       });
 
       if (coverNote) {
-        page.drawText(sanitizeText(coverNote), {
+        page.drawText(coverNote, {
           x: 50,
           y: height - 160,
           size: 11,
@@ -139,27 +156,21 @@ export async function GET(req) {
       }
 
       if (validUntil) {
-        page.drawText(
-          sanitizeText(`Gecerlilik Tarihi: ${validUntil}`),
-          {
-            x: 50,
-            y: height - 190,
-            size: 11,
-            font,
-          }
-        );
+        page.drawText(`Geçerlilik Tarihi: ${validUntil}`, {
+          x: 50,
+          y: height - 190,
+          size: 11,
+          font,
+        });
       }
 
       if (offer.client_name) {
-        page.drawText(
-          sanitizeText(`Musteri: ${offer.client_name}`),
-          {
-            x: 50,
-            y: height - 220,
-            size: 11,
-            font,
-          }
-        );
+        page.drawText(`Müşteri: ${offer.client_name}`, {
+          x: 50,
+          y: height - 220,
+          size: 11,
+          font,
+        });
       }
     }
 
@@ -168,24 +179,21 @@ export async function GET(req) {
       const page = pdfDoc.addPage();
       const { width, height } = page.getSize();
 
-      page.drawText(
-        sanitizeText('Ucret Tablosu - E-2 Vizesi Basvurusu'),
-        {
-          x: 50,
-          y: height - 80,
-          size: 16,
-          font: fontBold,
-        }
-      );
+      page.drawText("Ücret Tablosu - E-2 Vizesi Başvurusu", {
+        x: 50,
+        y: height - 80,
+        size: 16,
+        font: fontBold,
+      });
 
       let y = height - 120;
-      page.drawText(sanitizeText('Hizmet'), {
+      page.drawText("Hizmet", {
         x: 50,
         y,
         size: 12,
         font: fontBold,
       });
-      page.drawText(sanitizeText('Ucret (USD)'), {
+      page.drawText("Ücret (USD)", {
         x: width - 150,
         y,
         size: 12,
@@ -198,7 +206,7 @@ export async function GET(req) {
 
       includedItems.forEach((item) => {
         if (y < 80) return;
-        page.drawText(sanitizeText(item.label), {
+        page.drawText(item.label || "", {
           x: 50,
           y,
           size: 11,
@@ -219,26 +227,20 @@ export async function GET(req) {
       const page = pdfDoc.addPage();
       const { width, height } = page.getSize();
 
-      page.drawText(
-        sanitizeText('Notlar – E-2 Antlasmali Yatirimci Statusu'),
-        {
-          x: 50,
-          y: height - 80,
-          size: 16,
-          font: fontBold,
-        }
-      );
+      page.drawText("Notlar – E-2 Anlaşmalı Yatırımcı Statüsü", {
+        x: 50,
+        y: height - 80,
+        size: 16,
+        font: fontBold,
+      });
 
-      const notesPlain = sanitizeText(
-        notesHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-      );
-
+      const notesPlain = htmlToPlain(notesHtml);
       const maxWidth = width - 100;
       const fontSize = 11;
       let y = height - 110;
 
-      const words = notesPlain.split(' ');
-      let line = '';
+      const words = notesPlain.split(" ");
+      let line = "";
       const lines = [];
 
       words.forEach((w) => {
@@ -255,7 +257,7 @@ export async function GET(req) {
 
       lines.forEach((ln) => {
         if (y < 50) return;
-        page.drawText(sanitizeText(ln), {
+        page.drawText(ln, {
           x: 50,
           y,
           size: fontSize,
@@ -270,23 +272,21 @@ export async function GET(req) {
       const page = pdfDoc.addPage();
       const { width, height } = page.getSize();
 
-      page.drawText(sanitizeText('Odeme Talimati'), {
+      page.drawText("Ödeme Talimatı", {
         x: 50,
         y: height - 80,
         size: 16,
         font: fontBold,
       });
 
-      const paymentPlain = sanitizeText(
-        paymentHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-      );
+      const paymentPlain = htmlToPlain(paymentHtml);
 
       const maxWidth = width - 100;
       const fontSize = 11;
       let y = height - 110;
 
-      const words = paymentPlain.split(' ');
-      let line = '';
+      const words = paymentPlain.split(" ");
+      let line = "";
       const lines = [];
 
       words.forEach((w) => {
@@ -303,7 +303,7 @@ export async function GET(req) {
 
       lines.forEach((ln) => {
         if (y < 50) return;
-        page.drawText(sanitizeText(ln), {
+        page.drawText(ln, {
           x: 50,
           y,
           size: fontSize,
@@ -318,14 +318,14 @@ export async function GET(req) {
     return new NextResponse(Buffer.from(pdfBytes), {
       status: 200,
       headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `inline; filename="offer-${id}.pdf"`,
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename="offer-${id}.pdf"`,
       },
     });
   } catch (err) {
-    console.error('PDF route error:', err);
+    console.error("PDF route error:", err);
     return NextResponse.json(
-      { error: 'PDF oluşturulurken hata oluştu' },
+      { error: "PDF oluşturulurken hata oluştu" },
       { status: 500 }
     );
   }
